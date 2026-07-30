@@ -509,7 +509,7 @@ While `HELLO phase=pending`, confirm Trust/Pairing in the myVAILLANT app.
 ```mermaid
 graph TD
     %% Tier 1: Device
-    Device[<b>Tier 1: Device</b><br/>Vaillant VR921 Gateway<br/>ID: 212232...6209] 
+    Device[<b>Tier 1: Device</b><br/>Vaillant VR921 Gateway<br/>ID: ..] 
 
     %% Tier 2: Entities
     subgraph Entities [<b>Tier 2: Entities</b>]

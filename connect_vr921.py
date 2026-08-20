@@ -244,44 +244,14 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return default
 
 
-def _ship_txt_value(name: str, default: str, *, max_bytes: int, required: bool = True) -> str:
-    """Read and validate one SHIP TXT value."""
-    value = _env_str(name, default).strip()
-    if required and not value:
-        raise ValueError(f"{name} darf nicht leer sein")
-    if ";" in value or any(character.isspace() for character in value):
-        raise ValueError(f"{name} darf weder Semikolon noch Leerraum enthalten")
-    if len(value.encode("utf-8")) > max_bytes:
-        raise ValueError(f"{name} ist länger als {max_bytes} UTF-8-Bytes")
-    return value
-
-
-def _local_ship_service(local_ski: str, local_ship_id: str) -> Tuple[str, Dict[str, str]]:
-    """Build a complete, human-readable SHIP mDNS identity."""
-    service_name = _ship_txt_value(
-        "SHIP_MDNS_SERVICE_NAME",
-        f"VR921-EEBUS-Client-{local_ski[:6]}",
-        max_bytes=63,
-    )
-    categories_raw = _ship_txt_value("SHIP_DEVICE_CATEGORIES", "2", max_bytes=32)
-    categories = categories_raw.split(",")
-    if len(categories) != len(set(categories)) or any(
-        not category.isdigit() or int(category) not in range(1, 8)
-        for category in categories
-    ):
-        raise ValueError("SHIP_DEVICE_CATEGORIES muss eindeutige Werte von 1 bis 7 enthalten")
-
-    return service_name, {
+def _main_pairing_mdns_identity(local_ski: str) -> Tuple[str, Dict[str, str]]:
+    """Return the exact service name and TXT record used by `main` for pairing."""
+    normalized_ski = _normalize_ski(local_ski)
+    return f"Python-{normalized_ski[:6]}", {
         "txtvers": "1",
-        "id": _ship_txt_value("SHIP_ID", local_ship_id, max_bytes=63),
         "path": "/ship/",
-        "ski": _normalize_ski(local_ski),
-        "register": str(_env_bool("SHIP_MDNS_REGISTER", True)).lower(),
-        "brand": _ship_txt_value("SHIP_DEVICE_BRAND", "OpenSource", max_bytes=32),
-        "type": _ship_txt_value("SHIP_DEVICE_TYPE", "Energy-Management-System", max_bytes=32),
-        "model": _ship_txt_value("SHIP_DEVICE_MODEL", "VR921-EEBUS-Client", max_bytes=32),
-        "serial": _ship_txt_value("SHIP_DEVICE_SERIAL", local_ship_id, max_bytes=32),
-        "cat": ",".join(categories),
+        "ski": normalized_ski,
+        "register": "true",
     }
 
 
@@ -2506,8 +2476,7 @@ async def _run_ship_session(
     # SKI/fingerprint pinning instead of the public Web PKI.
     ssl_context.check_hostname = False
     ssl_context.verify_mode = ssl.CERT_NONE
-    if _env_bool("SHIP_OPENSSL_SECURITY_LEVEL_1", False):
-        ssl_context.set_ciphers("HIGH:!aNULL:!eNULL:!MD5@SECLEVEL=1")
+    ssl_context.set_ciphers("HIGH:!aNULL:!eNULL:!MD5@SECLEVEL=1")
 
     import websockets
 
@@ -2516,10 +2485,7 @@ async def _run_ship_session(
     connect_options: Dict[str, Any] = {
         "ssl": ssl_context,
         "subprotocols": cast(Any, ["ship"]),
-        "open_timeout": max(5, _env_int("SHIP_OPEN_TIMEOUT", 20)),
-        "max_size": max(65536, _env_int("SHIP_MAX_FRAME_BYTES", 2 * 1024 * 1024)),
-        "ping_interval": max(5, _env_int("SHIP_PING_INTERVAL", 20)),
-        "ping_timeout": max(5, _env_int("SHIP_PING_TIMEOUT", 20)),
+        "open_timeout": 20,
     }
     # websockets 15 added automatic proxy discovery. SHIP is a LAN protocol;
     # never route the gateway connection through an ambient HTTP proxy.
@@ -2527,9 +2493,6 @@ async def _run_ship_session(
         connect_options["proxy"] = None
 
     async with websockets.connect(uri, **connect_options) as ws:
-        if _env_bool("SHIP_REQUIRE_SUBPROTOCOL", True) and ws.subprotocol != "ship":
-            raise RuntimeError(f"Server hat WebSocket-Subprotokoll 'ship' nicht bestätigt: {ws.subprotocol!r}")
-
         peer_ski, fingerprint = _verify_peer_certificate(
             ws,
             advertised_ski=advertised_ski,
@@ -2603,7 +2566,7 @@ async def main() -> None:
             local_addresses=(local_ip,),
         )
         local_port = _env_int("SHIP_LOCAL_ADVERTISEMENT_PORT", 54885)
-        mdns_service_name, mdns_properties = _local_ship_service(local_ski, local_ship_id)
+        mdns_service_name, mdns_properties = _main_pairing_mdns_identity(local_ski)
         service_info = AsyncServiceInfo(
             "_ship._tcp.local.",
             f"{mdns_service_name}._ship._tcp.local.",
@@ -2613,10 +2576,7 @@ async def main() -> None:
         )
         await aiozc.async_register_service(service_info)
         browser = AsyncServiceBrowser(aiozc.zeroconf, "_ship._tcp.local.", handler)
-        _human_print(
-            f"📢 mDNS aktiv: {local_ip}; Name={mdns_service_name}; "
-            f"Gerät={mdns_properties['brand']}/{mdns_properties['model']}; lokale SKI={local_ski}"
-        )
+        _human_print(f"📢 mDNS aktiv: {local_ip}")
 
         await asyncio.to_thread(mqtt_pub.connect)
 

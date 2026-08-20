@@ -110,17 +110,20 @@ class CodecTests(unittest.TestCase):
 
 
 class DiscoveryTests(unittest.TestCase):
-    def test_local_ship_service_contains_visible_and_mandatory_identity(self):
+    def test_pairing_mdns_identity_matches_main(self):
         ski = "01" * 20
-        name, properties = vr._local_ship_service(ski, "python-0123456789ab")
+        name, properties = vr._main_pairing_mdns_identity(ski)
 
-        self.assertEqual("VR921-EEBUS-Client-010101", name)
+        self.assertEqual("Python-010101", name)
         self.assertEqual(
-            {"txtvers", "id", "path", "ski", "register", "brand", "type", "model", "serial", "cat"},
-            set(properties),
+            {
+                "txtvers": "1",
+                "path": "/ship/",
+                "ski": ski,
+                "register": "true",
+            },
+            properties,
         )
-        self.assertEqual("VR921-EEBUS-Client", properties["model"])
-        self.assertEqual("2", properties["cat"])
 
     def test_mdns_discovery_ignores_other_ship_services_on_local_host(self):
         class FakeServiceInfo:
@@ -353,6 +356,14 @@ class HandshakeTests(unittest.TestCase):
                 {"phase": "pending", "waiting": 60000},
             ],
             sent_hellos,
+        )
+        self.assertEqual(
+            b'\x01{"connectionHello":[{"phase":"ready"},{"waiting":60000}]}',
+            websocket.sent[0],
+        )
+        self.assertEqual(
+            b'\x01{"connectionHello":[{"phase":"pending"},{"waiting":60000}]}',
+            websocket.sent[1],
         )
 
     def test_application_rejection_returns_handshake_failure(self):

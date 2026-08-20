@@ -90,12 +90,6 @@ HA_MQTT_PASSWORD=
 SHIP_JSONL=true
 SHIP_DISCOVERY_LOG=false
 
-# In myVAILLANT sichtbare SHIP-Identität (optional)
-SHIP_MDNS_SERVICE_NAME=VR921-EEBUS-Client
-SHIP_DEVICE_BRAND=OpenSource
-SHIP_DEVICE_MODEL=VR921-EEBUS-Client
-SHIP_DEVICE_TYPE=Energy-Management-System
-
 # Optional: bekannten VR921 vor dem ersten Verbindungsaufbau festlegen
 VR921_REMOTE_SKI=
 ```
@@ -176,12 +170,6 @@ HA_MQTT_PASSWORD=
 SHIP_JSONL=true
 SHIP_DISCOVERY_LOG=false
 
-# SHIP identity visible in myVAILLANT (optional)
-SHIP_MDNS_SERVICE_NAME=VR921-EEBUS-Client
-SHIP_DEVICE_BRAND=OpenSource
-SHIP_DEVICE_MODEL=VR921-EEBUS-Client
-SHIP_DEVICE_TYPE=Energy-Management-System
-
 # Optional: pin the known VR921 before the first connection
 VR921_REMOTE_SKI=
 ```
@@ -246,17 +234,13 @@ Zusätzlich:
 - `SHIP_HANDSHAKE_LOG=false` blendet standardmäßig rohe Handshake-Payloads aus; `true` ist nur für gezielte Diagnose gedacht.
 
 ### SHIP/SPINE Sicherheit und READ-Profil
-- `SHIP_MDNS_SERVICE_NAME`, `SHIP_DEVICE_BRAND`, `SHIP_DEVICE_MODEL` und `SHIP_DEVICE_TYPE`: bestimmen die in myVAILLANT sichtbare lokale SHIP-Identität. Leerraum und Semikolons sind in SHIP-TXT-Werten nicht zulässig.
-- `SHIP_DEVICE_SERIAL`, `SHIP_DEVICE_CATEGORIES` (Default `2`, Energiemanagement) und `SHIP_ID`: optionale weitere SHIP-Identitätswerte. Ohne Konfiguration bleiben ID und Serienkennung an das persistente Client-Zertifikat gebunden.
+- Während des Pairings verwendet der Client absichtlich exakt den mDNS-Service-Namen und TXT-Record aus `main` (`Python-<SKI>` mit `txtvers`, `path`, `ski`, `register`). Zusätzliche Identitätsfelder werden nicht eingefügt.
 - `VR921_REMOTE_SKI`: optional erwartete Remote-SKI. Nach dem ersten erfolgreich in der App bestätigten Handshake wird die Identität zusätzlich in `vr921_peer.json` gepinnt.
 - `VR921_PEER_FILE`: alternativer Pfad für den persistenten Peer-Pin.
 - `SHIP_READ_ALL_ADVERTISED=false`: standardmäßig werden nur bekannte, explizit als READ angekündigte Funktionen gelesen. `true` erlaubt alle angekündigten READ-Funktionen und ist nur für Diagnosezwecke gedacht.
 - `SHIP_SUBSCRIBE_UPDATES=true`: abonniert unterstützte Server-Features und führt anschließend den Initial-Read aus.
 - `SHIP_READ_DELAY_MS` (Default `30`): kleine Pause zwischen Discovery-basierten READs zum Schutz des Gateways.
 - `SHIP_REQUEST_TIMEOUT`, `SHIP_RECONNECT_INITIAL_SECONDS`, `SHIP_RECONNECT_MAX_SECONDS`: Request-Timeout und Reconnect-Grenzen. Beim ersten, noch nicht bestätigten Pairing beendet ein Fehler den einzelnen Verbindungsversuch wie im `main`-Branch; automatischer Reconnect beginnt erst mit gespeicherter Peer-Identität.
-- `SHIP_REQUIRE_SUBPROTOCOL=true`: verlangt die WebSocket-Subprotokollbestätigung `ship`.
-- `SHIP_OPEN_TIMEOUT`, `SHIP_MAX_FRAME_BYTES`, `SHIP_PING_INTERVAL` und `SHIP_PING_TIMEOUT`: begrenzen Verbindungsaufbau/Frame-Größe und konfigurieren die WebSocket-Lebenszeichen.
-- `SHIP_OPENSSL_SECURITY_LEVEL_1=false`: nur für ältere VR921-Firmware aktivieren, falls deren Cipher mit dem OpenSSL-Standardprofil nicht funktioniert.
 
 Das Programm führt keine SPINE-Writes auf Gerätefunktionen aus. WRITE-Fähigkeiten des Peers erteilen keine Schreibberechtigung.
 
@@ -286,17 +270,13 @@ Also:
 - `SHIP_HANDSHAKE_LOG=false` hides raw handshake payloads by default; enable it only for focused diagnostics.
 
 ### SHIP/SPINE security and READ profile
-- `SHIP_MDNS_SERVICE_NAME`, `SHIP_DEVICE_BRAND`, `SHIP_DEVICE_MODEL` and `SHIP_DEVICE_TYPE`: configure the local SHIP identity visible in myVAILLANT. SHIP TXT values must not contain whitespace or semicolons.
-- `SHIP_DEVICE_SERIAL`, `SHIP_DEVICE_CATEGORIES` (default `2`, energy management) and `SHIP_ID`: optional additional identity values. Without configuration, the ID and serial stay tied to the persistent client certificate.
+- During pairing the client deliberately uses the exact mDNS service name and TXT record from `main` (`Python-<SKI>` with `txtvers`, `path`, `ski`, `register`). No additional identity fields are injected.
 - `VR921_REMOTE_SKI`: optional expected remote SKI. After the first app-confirmed handshake the identity is also pinned in `vr921_peer.json`.
 - `VR921_PEER_FILE`: alternate path for the persistent peer pin.
 - `SHIP_READ_ALL_ADVERTISED=false`: by default only known functions explicitly advertised for READ are queried. `true` enables all advertised READ functions for diagnostics.
 - `SHIP_SUBSCRIBE_UPDATES=true`: subscribes to supported server features, followed by an initial read.
 - `SHIP_READ_DELAY_MS` (default `30`): small delay between discovery-driven reads to protect the gateway.
 - `SHIP_REQUEST_TIMEOUT`, `SHIP_RECONNECT_INITIAL_SECONDS`, `SHIP_RECONNECT_MAX_SECONDS`: request timeout and reconnect limits. During the first, not-yet-confirmed pairing, a failure ends the single connection attempt as on `main`; automatic reconnect starts only with a stored peer identity.
-- `SHIP_REQUIRE_SUBPROTOCOL=true`: requires the `ship` WebSocket subprotocol confirmation.
-- `SHIP_OPEN_TIMEOUT`, `SHIP_MAX_FRAME_BYTES`, `SHIP_PING_INTERVAL` and `SHIP_PING_TIMEOUT`: limit connection setup/frame size and configure WebSocket liveness checks.
-- `SHIP_OPENSSL_SECURITY_LEVEL_1=false`: enable only for older VR921 firmware whose ciphers fail with OpenSSL's default security profile.
 
 The program performs no SPINE writes to appliance functions. Advertised WRITE capability does not grant write authority.
 

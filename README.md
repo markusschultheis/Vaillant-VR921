@@ -10,7 +10,8 @@ Das Skript kann:
 - sich per **mDNS** (`_ship._tcp.local.`) selbst ankündigen und den VR921 finden
 - eine **wss://…/ship/** Verbindung aufbauen und den **SHIP-Handshake** durchführen
 - auf gateway-initiierte **SPINE READ/CALL** Nachrichten reagieren (wichtig für Interoperabilität)
-- **Measurement**-Server entdecken, abonnieren und Messwerte lesen
+- die vollständige Feature-Discovery auswerten und nur ausdrücklich angekündigte **READ**-Funktionen abfragen
+- **Measurement**, **Setpoint**, **HVAC**, **SmartEnergyManagementPs**, **DeviceDiagnosis** und **ElectricalConnection** lesen
 - optional Messwerte per **MQTT** inkl. **Home Assistant Discovery** veröffentlichen
 
 ### Wichtige Begriffe
@@ -31,7 +32,8 @@ The script can:
 - announce itself and discover the VR921 via **mDNS** (`_ship._tcp.local.`)
 - connect to **wss://…/ship/** and run the **SHIP handshake**
 - respond to gateway-initiated **SPINE READ/CALL** messages (required for interoperability)
-- discover/subscribe to **Measurement** servers and read telemetry
+- evaluate complete feature discovery and query only explicitly advertised **READ** functions
+- read **Measurement**, **Setpoint**, **HVAC**, **SmartEnergyManagementPs**, **DeviceDiagnosis** and **ElectricalConnection** data
 - optionally publish telemetry via **MQTT** with **Home Assistant Discovery**
 
 ### Key Terms
@@ -59,7 +61,7 @@ pip install -r requirements.txt
 
 ### Optional: MQTT/ Home Assistant
 - Wenn du MQTT nutzen willst: `paho-mqtt` ist bereits in [requirements.txt](requirements.txt) enthalten.
-- Broker-Zugangsdaten liegen in [mqtt_secrets.py](mqtt_secrets.py) (standardmäßig in `.gitignore`).
+- Kopiere [mqtt_secrets.example.py](mqtt_secrets.example.py) nach `mqtt_secrets.py` und trage dort optional die Broker-Zugangsdaten ein. Die lokale Datei wird von Git ignoriert.
 
 ### Betrieb auf Raspberry Pi / Server (als Daemon)
 Du kannst das Skript dauerhaft auf einem Raspberry Pi (Raspberry Pi OS) oder einem Linux-Server im Netzwerk laufen lassen – typisch über **systemd**.
@@ -87,6 +89,9 @@ HA_MQTT_PASSWORD=
 # Logging (optional)
 SHIP_JSONL=true
 SHIP_DISCOVERY_LOG=false
+
+# Optional: bekannten VR921 vor dem ersten Verbindungsaufbau festlegen
+VR921_REMOTE_SKI=
 ```
 
 3) systemd Service anlegen: `/etc/systemd/system/vaillant-vr921.service`
@@ -136,7 +141,7 @@ pip install -r requirements.txt
 
 ### Optional: MQTT / Home Assistant
 - If you want MQTT: `paho-mqtt` is included in [requirements.txt](requirements.txt).
-- Broker credentials are stored in [mqtt_secrets.py](mqtt_secrets.py) (ignored by default via `.gitignore`).
+- Copy [mqtt_secrets.example.py](mqtt_secrets.example.py) to `mqtt_secrets.py` and optionally enter the broker credentials there. The local file is ignored by Git.
 
 ### Running on a Raspberry Pi / server (as a daemon)
 You can run the script continuously on a Raspberry Pi (Raspberry Pi OS) or a Linux server in your LAN – typically via **systemd**.
@@ -164,6 +169,9 @@ HA_MQTT_PASSWORD=
 # Logging (optional)
 SHIP_JSONL=true
 SHIP_DISCOVERY_LOG=false
+
+# Optional: pin the known VR921 before the first connection
+VR921_REMOTE_SKI=
 ```
 
 3) Create a systemd unit: `/etc/systemd/system/vaillant-vr921.service`
@@ -206,7 +214,7 @@ journalctl -u vaillant-vr921.service -f
 
 ### MQTT/HA (optional)
 Du kannst MQTT auf zwei Arten konfigurieren:
-1) Datei [mqtt_secrets.py](mqtt_secrets.py) ausfüllen
+1) `mqtt_secrets.example.py` nach `mqtt_secrets.py` kopieren und die lokale Datei ausfüllen
 2) oder Umgebungsvariablen setzen (überschreiben `mqtt_secrets.py`)
 
 Relevante Variablen:
@@ -215,19 +223,36 @@ Relevante Variablen:
 - `HA_MQTT_STATE_PREFIX` (Default `ship`)
 - `SHIP_MQTT_DEBUG` (True/False)
 - `SHIP_MQTT_RETAIN_STATE` (True/False)
+- `HA_MQTT_TLS`, `HA_MQTT_CA_CERTS`, `HA_MQTT_TLS_INSECURE`
 
 Zusätzlich:
 - `HA_DEVICE_ID` / `HA_DEVICE_NAME` zur Identifikation in Home Assistant
 
 ### Logging/Output
-- `SHIP_JSONL=true` gibt Messwerte als JSONL (eine Zeile pro Update) aus.
+- `SHIP_JSONL=true` reserviert stdout für gültiges JSONL. Menschliche Diagnoseausgaben gehen nach stderr.
 - `SHIP_DISCOVERY_LOG=true` gibt zusätzliche Discovery-Infos aus.
+- `SHIP_HANDSHAKE_LOG=false` blendet standardmäßig rohe Handshake-Payloads aus; `true` ist nur für gezielte Diagnose gedacht.
+
+### SHIP/SPINE Sicherheit und READ-Profil
+- `VR921_REMOTE_SKI`: optional erwartete Remote-SKI. Nach dem ersten erfolgreich in der App bestätigten Handshake wird die Identität zusätzlich in `vr921_peer.json` gepinnt.
+- `VR921_PEER_FILE`: alternativer Pfad für den persistenten Peer-Pin.
+- `SHIP_READ_ALL_ADVERTISED=false`: standardmäßig werden nur bekannte, explizit als READ angekündigte Funktionen gelesen. `true` erlaubt alle angekündigten READ-Funktionen und ist nur für Diagnosezwecke gedacht.
+- `SHIP_SUBSCRIBE_UPDATES=true`: abonniert unterstützte Server-Features und führt anschließend den Initial-Read aus.
+- `SHIP_READ_DELAY_MS` (Default `30`): kleine Pause zwischen Discovery-basierten READs zum Schutz des Gateways.
+- `SHIP_REQUEST_TIMEOUT`, `SHIP_HANDSHAKE_TIMEOUT`, `SHIP_RECONNECT_INITIAL_SECONDS`, `SHIP_RECONNECT_MAX_SECONDS`: Timeout- und Reconnect-Grenzen.
+- `SHIP_REQUIRE_SUBPROTOCOL=true`: verlangt die WebSocket-Subprotokollbestätigung `ship`.
+- `SHIP_OPEN_TIMEOUT`, `SHIP_MAX_FRAME_BYTES`, `SHIP_PING_INTERVAL` und `SHIP_PING_TIMEOUT`: begrenzen Verbindungsaufbau/Frame-Größe und konfigurieren die WebSocket-Lebenszeichen.
+- `SHIP_OPENSSL_SECURITY_LEVEL_1=false`: nur für ältere VR921-Firmware aktivieren, falls deren Cipher mit dem OpenSSL-Standardprofil nicht funktioniert.
+
+Das Programm führt keine SPINE-Writes auf Gerätefunktionen aus. WRITE-Fähigkeiten des Peers erteilen keine Schreibberechtigung.
+
+Wenn sich das echte VR921-Zertifikat nach einem Firmware-/Gerätetausch ändert, beendet der Client die Verbindung absichtlich. `vr921_peer.json` darf erst nach manueller Prüfung der neuen SKI entfernt werden; beim nächsten in der myVAILLANT-App bestätigten Handshake wird neu gepinnt.
 
 ## English
 
 ### MQTT/HA (optional)
 You can configure MQTT in two ways:
-1) Fill in [mqtt_secrets.py](mqtt_secrets.py)
+1) Copy `mqtt_secrets.example.py` to `mqtt_secrets.py` and fill in the local file
 2) or set environment variables (they override `mqtt_secrets.py`)
 
 Relevant variables:
@@ -236,259 +261,60 @@ Relevant variables:
 - `HA_MQTT_STATE_PREFIX` (default `ship`)
 - `SHIP_MQTT_DEBUG` (True/False)
 - `SHIP_MQTT_RETAIN_STATE` (True/False)
+- `HA_MQTT_TLS`, `HA_MQTT_CA_CERTS`, `HA_MQTT_TLS_INSECURE`
 
 Also:
 - `HA_DEVICE_ID` / `HA_DEVICE_NAME` for Home Assistant device naming
 
 ### Logging/Output
-- `SHIP_JSONL=true` prints measurements as JSONL (one line per update).
+- `SHIP_JSONL=true` reserves stdout for valid JSONL. Human diagnostics are written to stderr.
 - `SHIP_DISCOVERY_LOG=true` prints extra discovery details.
+- `SHIP_HANDSHAKE_LOG=false` hides raw handshake payloads by default; enable it only for focused diagnostics.
+
+### SHIP/SPINE security and READ profile
+- `VR921_REMOTE_SKI`: optional expected remote SKI. After the first app-confirmed handshake the identity is also pinned in `vr921_peer.json`.
+- `VR921_PEER_FILE`: alternate path for the persistent peer pin.
+- `SHIP_READ_ALL_ADVERTISED=false`: by default only known functions explicitly advertised for READ are queried. `true` enables all advertised READ functions for diagnostics.
+- `SHIP_SUBSCRIBE_UPDATES=true`: subscribes to supported server features, followed by an initial read.
+- `SHIP_READ_DELAY_MS` (default `30`): small delay between discovery-driven reads to protect the gateway.
+- `SHIP_REQUEST_TIMEOUT`, `SHIP_HANDSHAKE_TIMEOUT`, `SHIP_RECONNECT_INITIAL_SECONDS`, `SHIP_RECONNECT_MAX_SECONDS`: timeout and reconnect limits.
+- `SHIP_REQUIRE_SUBPROTOCOL=true`: requires the `ship` WebSocket subprotocol confirmation.
+- `SHIP_OPEN_TIMEOUT`, `SHIP_MAX_FRAME_BYTES`, `SHIP_PING_INTERVAL` and `SHIP_PING_TIMEOUT`: limit connection setup/frame size and configure WebSocket liveness checks.
+- `SHIP_OPENSSL_SECURITY_LEVEL_1=false`: enable only for older VR921 firmware whose ciphers fail with OpenSSL's default security profile.
+
+The program performs no SPINE writes to appliance functions. Advertised WRITE capability does not grant write authority.
+
+If the genuine VR921 certificate changes after a firmware or device replacement, the client intentionally rejects the connection. Remove `vr921_peer.json` only after manually verifying the new SKI; the next handshake confirmed in the myVAILLANT app will establish a new pin.
 
 ---
 
-# Script Overview (Functions & Classes)
+# Script Overview (runtime remains one monolithic file)
 
 ## Deutsch
 
-### 1) Utilities
-- `MsgCounter`
-  - Zweck: Thread-/Async-sicherer Zähler für `msgCounter` in SPINE Datagrammen.
-  - Warum: SPINE erwartet pro Datagramm einen monoton steigenden Counter.
+`connect_vr921.py` bleibt der einzige Runtime-Monolith. Die wichtigsten internen Bereiche sind:
 
-- `_env_str`, `_env_int`, `_env_bool`
-  - Zweck: Lesen von Umgebungsvariablen mit sinnvollen Defaults.
-
-- `_slug`
-  - Zweck: Erzeugt sichere IDs für MQTT/HA (`object_id`).
-
-- `_unit_to_ha`, `_guess_ha_metadata`, `_friendly_sensor_name`
-  - Zweck: Best-Effort Mapping von SPINE scope/unit zu Home Assistant Sensor-Metadaten und Namen.
-
-### 2) MQTT / Home Assistant
-- `HAMqttPublisher`
-  - Zweck: Optionaler Publisher für MQTT + Home Assistant Discovery.
-  - Aktivierung: wenn `HA_MQTT_HOST` gesetzt ist (oder in `mqtt_secrets.py`).
-  - Wichtige Methoden:
-    - `connect()`: verbindet zum Broker und setzt LWT (availability).
-    - `ensure_discovery(...)`: publiziert einmalig Discovery-Config für Sensoren.
-    - `publish_state(...)`: publiziert Sensorwerte.
-    - `close()`: setzt offline und trennt.
-
-### 3) EEBUS JSON Konvertierung
-- `json_into_eebus_json(...)`
-  - Zweck: Normales JSON → EEBUS „array-wrapped“ JSON.
-  - Hintergrund: Viele SHIP/SPINE Stacks erwarten diese Struktur.
-
-- `json_text_into_eebus_json(...)`
-  - Zweck: Wie oben, aber von JSON-Text ausgehend (mit stabiler Feldreihenfolge).
-
-- `json_from_eebus_json(...)`
-  - Zweck: EEBUS array-wrapped JSON → normales JSON (ship-go kompatible Ersetzung).
-
-### 4) SPINE Parsing/Reply Helpers
-- `_first_cmd(...)`
-  - Zweck: Extrahiert das erste `cmd` Objekt, egal ob `cmd` als Dict, Liste oder verschachtelte Liste kommt.
-
-- `_parse_spine_datagram(...)`
-  - Zweck: Aus einem SHIP DATA JSON `(header, first_cmd)` extrahieren.
-
-- `_make_spine_reply_addresses(...)`
-  - Zweck: Baut die korrekten Source/Destination Adressen für Reply/Result.
-  - Interop: Erzwingt **nicht** immer `device`, weil manche Peers das als Fehler ansehen.
-
-### 5) Certificate / Identity
-- `get_or_create_certificate()`
-  - Zweck: Erstellt/verwaltet `cert.pem` und `key.pem`.
-  - Output: gibt die SKI (hex) zurück.
-
-### 6) mDNS
-- `MDNSHandler`
-  - Zweck: Listener für `_ship._tcp.local.` der den VR921 Kandidaten in `target_info` speichert.
-
-### 7) SHIP Send Helpers
-- `send_ship_json(...)`
-  - Zweck: SHIP CONTROL Frame (0x01) senden.
-
-- `send_ship_data(...)`
-  - Zweck: SHIP DATA Frame (0x02) senden (ship-go kompatibles „payload placeholder“ Vorgehen).
-
-- `send_access_methods(...)`
-  - Zweck: SHIP `accessMethods` mit lokaler `id` senden.
-
-### 8) Local Discovery Replies
-- `build_local_detailed_discovery(...)`
-  - Zweck: Minimale `NodeManagementDetailedDiscoveryData` Antwort.
-
-- `build_device_classification_manufacturer_data(...)`, `build_device_classification_user_data(...)`
-  - Zweck: Minimale Antworten für DeviceClassification.
-
-### 9) SPINE Send/Handle
-- `_spine_addr(...)`
-  - Zweck: Convenience Builder für SPINE Feature Address.
-
-- `send_spine_read(...)`, `send_spine_call(...)`
-  - Zweck: Baut und sendet SPINE Read/Call Datagramme (als SHIP DATA).
-
-- `send_spine_result_ok(...)`
-  - Zweck: ACK über cmdClassifier=`result` (errorNumber 0) mit msgCounterReference.
-
-- `handle_spine_read(...)`
-  - Zweck: Minimale Verarbeitung von `cmdClassifier=read` und passende Replies.
-
-### 10) Remote Discovery / Measurement
-- `request_remote_detailed_discovery(...)`
-  - Zweck: Fordert vom VR921 die `nodeManagementDetailedDiscoveryData` an.
-
-- `request_remote_node_management_use_case_data(...)`
-  - Zweck: Fordert `nodeManagementUseCaseData` an.
-
-- `_extract_entities(...)`, `_extract_measurement_servers(...)`
-  - Zweck: Parse der Discovery, um Entities und Measurement Server zu finden.
-
-- `subscribe_remote_measurement(...)`
-  - Zweck: Subscription via NodeManagementSubscriptionRequestCall.
-
-- `request_remote_measurement_once(...)`
-  - Zweck: Einmaliges Lesen von `measurementDescriptionListData` und `measurementListData`.
-
-- `parse_measurement_description(...)`, `parse_measurement_list(...)`
-  - Zweck: Parsing der Reply/Notify Payloads zu strukturierten Updates.
-
-### 11) SHIP Handshake + Main
-- `perform_ship_handshake(...)`
-  - Zweck: Implementiert den SHIP Handshake als Zustandsmaschine:
-    - CMI Init
-    - HELLO (pending/ready)
-    - Protocol negotiation
-    - PIN (nur none)
-    - Access methods exchange
-
-- `main()`
-  - Zweck: Orchestriert alles:
-    - Zertifikat/SKI
-    - mDNS announce + discovery
-    - Websocket connect + handshake
-    - Receive loop: SPINE ACKs, discovery, subscriptions, reads
-    - Optional MQTT Publish
-
----
+- **Identität und Sicherheit:** atomare Zertifikat-/Key-Erzeugung, Private-Key-Modus `0600`, mDNS-SKI-Auswahl, Prüfung des TLS-Zertifikat-SKI und persistenter SHA-256-Peer-Pin.
+- **SHIP:** validierter CMI-/HELLO-/Protocol-/PIN-/Access-Handshake mit Phasen-Timeouts sowie persistenter Reconnect mit begrenztem exponentiellem Backoff.
+- **EEBUS-JSON:** struktureller Encoder/Decoder ohne globale String-Ersetzungen; Strings, echte Arrays und mehrere SPINE-Commands bleiben erhalten.
+- **SPINE Discovery:** jede Feature-Adresse wird separat mit Typ, Rolle, `supportedFunction` und `possibleOperations` inventarisiert.
+- **Read-only Plan:** nur Funktionen, die der Peer ausdrücklich für READ ankündigt und die in der sicheren Allowlist liegen, werden automatisch gelesen. Optional kann ein Diagnosemodus alle angekündigten READs aktivieren.
+- **Zusätzliche Daten:** Measurement inklusive Qualitäts-/Zeitmetadaten, Setpoint inklusive Grenzen und Status, HVAC, SmartEnergyManagementPs, DeviceDiagnosis und ElectricalConnection.
+- **Subscriptions:** unterstützte Server-Features werden abonniert und anschließend initial gelesen. Requests werden über `msgCounterReference` verfolgt; Fehler und Timeouts werden sichtbar.
+- **Ausgabe:** Measurement- und Setpoint-Werte können über MQTT/HA erscheinen. `SHIP_JSONL=true` gibt zusätzlich normalisierte `measurement`, `setpoint` und generische `spine_function` Events aus.
 
 ## English
 
-### 1) Utilities
-- `MsgCounter`
-  - Purpose: async-safe counter for SPINE `msgCounter`.
+`connect_vr921.py` remains the only runtime monolith. Its main internal areas are:
 
-- `_env_str`, `_env_int`, `_env_bool`
-  - Purpose: read environment variables with safe defaults.
-
-- `_slug`
-  - Purpose: build MQTT/HA-safe object ids.
-
-- `_unit_to_ha`, `_guess_ha_metadata`, `_friendly_sensor_name`
-  - Purpose: best-effort mapping from SPINE scope/unit to HA metadata and names.
-
-### 2) MQTT / Home Assistant
-- `HAMqttPublisher`
-  - Purpose: optional MQTT publisher with Home Assistant Discovery.
-  - Enabled: if `HA_MQTT_HOST` is configured (or provided in `mqtt_secrets.py`).
-  - Key methods:
-    - `connect()`: connects and sets an LWT availability.
-    - `ensure_discovery(...)`: publishes discovery config once per sensor.
-    - `publish_state(...)`: publishes sensor values.
-    - `close()`: marks offline and disconnects.
-
-### 3) EEBUS JSON Conversion
-- `json_into_eebus_json(...)`
-  - Purpose: convert normal JSON → EEBUS array-wrapped JSON.
-
-- `json_text_into_eebus_json(...)`
-  - Purpose: same, starting from JSON text while preserving field order.
-
-- `json_from_eebus_json(...)`
-  - Purpose: convert EEBUS array-wrapped JSON → normal JSON.
-
-### 4) SPINE Parsing/Reply Helpers
-- `_first_cmd(...)`
-  - Purpose: extract the first `cmd` object regardless of nesting.
-
-- `_parse_spine_datagram(...)`
-  - Purpose: extract `(header, first_cmd)` from a decoded SHIP DATA message.
-
-- `_make_spine_reply_addresses(...)`
-  - Purpose: compute correct source/destination for replies/results.
-  - Interop: does not always force-inject `device`.
-
-### 5) Certificate / Identity
-- `get_or_create_certificate()`
-  - Purpose: manage `cert.pem`/`key.pem` and return the SKI hex.
-
-### 6) mDNS
-- `MDNSHandler`
-  - Purpose: listen for `_ship._tcp.local.` and keep the VR921 candidate in `target_info`.
-
-### 7) SHIP Send Helpers
-- `send_ship_json(...)`
-  - Purpose: send SHIP CONTROL frames (0x01).
-
-- `send_ship_data(...)`
-  - Purpose: send SHIP DATA frames (0x02) using a ship-go compatible placeholder approach.
-
-- `send_access_methods(...)`
-  - Purpose: send SHIP `accessMethods` with local id.
-
-### 8) Local Discovery Replies
-- `build_local_detailed_discovery(...)`
-  - Purpose: minimal `NodeManagementDetailedDiscoveryData` reply.
-
-- `build_device_classification_manufacturer_data(...)`, `build_device_classification_user_data(...)`
-  - Purpose: minimal DeviceClassification replies.
-
-### 9) SPINE Send/Handle
-- `_spine_addr(...)`
-  - Purpose: convenience SPINE address builder.
-
-- `send_spine_read(...)`, `send_spine_call(...)`
-  - Purpose: build + send SPINE read/call datagrams.
-
-- `send_spine_result_ok(...)`
-  - Purpose: acknowledge a datagram via cmdClassifier=`result` (errorNumber 0).
-
-- `handle_spine_read(...)`
-  - Purpose: minimal `cmdClassifier=read` handling and replies.
-
-### 10) Remote Discovery / Measurement
-- `request_remote_detailed_discovery(...)`
-  - Purpose: request `nodeManagementDetailedDiscoveryData` from the VR921.
-
-- `request_remote_node_management_use_case_data(...)`
-  - Purpose: request `nodeManagementUseCaseData`.
-
-- `_extract_entities(...)`, `_extract_measurement_servers(...)`
-  - Purpose: parse discovery to list entities and measurement servers.
-
-- `subscribe_remote_measurement(...)`
-  - Purpose: subscription via NodeManagementSubscriptionRequestCall.
-
-- `request_remote_measurement_once(...)`
-  - Purpose: read `measurementDescriptionListData` and `measurementListData` once.
-
-- `parse_measurement_description(...)`, `parse_measurement_list(...)`
-  - Purpose: parse reply/notify payloads into structured updates.
-
-### 11) SHIP Handshake + Main
-- `perform_ship_handshake(...)`
-  - Purpose: implements SHIP handshake state machine:
-    - CMI init
-    - HELLO (pending/ready)
-    - protocol negotiation
-    - PIN (only none)
-    - access methods exchange
-
-- `main()`
-  - Purpose: orchestrates everything end-to-end.
-
----
+- **Identity and security:** atomic certificate/key creation, private-key mode `0600`, mDNS SKI selection, TLS certificate SKI verification and a persistent SHA-256 peer pin.
+- **SHIP:** validated CMI/HELLO/protocol/PIN/access handshake with phase timeouts and persistent reconnect with bounded exponential backoff.
+- **EEBUS JSON:** structural encoding/decoding without global string replacement; strings, real arrays and multiple SPINE commands are preserved.
+- **SPINE discovery:** each feature address is retained with its type, role, `supportedFunction` and `possibleOperations`.
+- **Read-only plan:** only functions explicitly advertised for READ and included in the safe allowlist are queried automatically. A diagnostic option enables every advertised READ.
+- **Additional data:** Measurement including quality/time metadata, Setpoint including limits and state, HVAC, SmartEnergyManagementPs, DeviceDiagnosis and ElectricalConnection.
+- **Subscriptions:** supported server features are subscribed and then read initially. Requests are tracked through `msgCounterReference`; errors and timeouts are reported.
+- **Output:** Measurement and Setpoint values can be published through MQTT/HA. `SHIP_JSONL=true` additionally emits normalized `measurement`, `setpoint` and generic `spine_function` events.
 
 # Run
 
@@ -552,4 +378,4 @@ graph TD
     style Device fill:#f9f,stroke:#333,stroke-width:2px
     style Entities fill:#fff,stroke:#333,stroke-dasharray: 5 5
     style Features fill:#dfd,stroke:#333,stroke-width:1px
-
+```

@@ -4,10 +4,14 @@ mqtt_secrets.py
 # Generated client identity (created by connect_vr921.py)
 cert.pem
 key.pem
+vr921_peer.json
 
 # Python cache
 __pycache__/
 *.pyc
+.pytest_cache/
+.ruff_cache/
+.venv/
 
 # macOS
 .DS_Store

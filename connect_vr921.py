@@ -70,7 +70,7 @@ class PeerIdentityError(RuntimeError):
 
 
 class PeerRejectedError(RuntimeError):
-    """Raised when the remote application explicitly rejects SHIP pairing."""
+    """Raised when the remote application has not accepted SHIP pairing."""
 
 
 LOCAL_CLIENT_FEATURES: Dict[str, Tuple[Tuple[int, ...], int]] = {
@@ -246,6 +246,11 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if s in {"0", "false", "no", "n", "off"}:
         return False
     return default
+
+
+def _is_application_rejection(exc: BaseException) -> bool:
+    """Return whether a session failed because the remote application closed it."""
+    return isinstance(exc, PeerRejectedError) or getattr(exc, "code", None) == 4452
 
 
 def _ship_txt_value(name: str, default: str, *, max_bytes: int, required: bool = True) -> str:
@@ -2636,8 +2641,17 @@ async def main() -> None:
 
         minimum_backoff = max(1, _env_int("SHIP_RECONNECT_INITIAL_SECONDS", 2))
         maximum_backoff = max(minimum_backoff, _env_int("SHIP_RECONNECT_MAX_SECONDS", 60))
+        pairing_announcement_seconds = max(0, _env_int("SHIP_PAIRING_ANNOUNCEMENT_SECONDS", 30))
+        pairing_retry_seconds = max(5, _env_int("SHIP_PAIRING_RETRY_SECONDS", 15))
         backoff = minimum_backoff
         discovery_timeout = max(5, _env_int("SHIP_DISCOVERY_TIMEOUT", 30))
+
+        if not pinned_peer.get("certificate_sha256") and pairing_announcement_seconds:
+            _human_print(
+                f"⏳ Pairing: mDNS-Identität bleibt sichtbar; erster Verbindungsversuch "
+                f"in {pairing_announcement_seconds}s. Jetzt myVAILLANT öffnen."
+            )
+            await asyncio.sleep(pairing_announcement_seconds)
 
         while True:
             target = await _wait_for_target(handler, timeout=discovery_timeout)
@@ -2664,21 +2678,17 @@ async def main() -> None:
                 )
             except PeerIdentityError:
                 raise
-            except PeerRejectedError as exc:
-                _human_print(
-                    f"⛔ {exc}. Kein automatischer Neuversuch; "
-                    "Pairing in myVAILLANT erneut öffnen und den Client neu starten."
-                )
-                return
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                if getattr(exc, "code", None) == 4452:
+                if _is_application_rejection(exc):
                     _human_print(
-                        "⛔ VR921/myVAILLANT hat die SHIP-Freigabe abgelehnt. "
-                        "Kein automatischer Neuversuch; Pairing erneut öffnen und den Client neu starten."
+                        "⏳ VR921/myVAILLANT hat die SHIP-Verbindung noch nicht freigegeben. "
+                        f"mDNS bleibt aktiv; neuer Pairing-Versuch in {pairing_retry_seconds}s. "
+                        "In der App den angezeigten Client bestätigen."
                     )
-                    return
+                    await asyncio.sleep(pairing_retry_seconds)
+                    continue
                 duration = time.monotonic() - attempt_started
                 if duration >= 60:
                     backoff = minimum_backoff

@@ -321,14 +321,17 @@ class HandshakeTests(unittest.TestCase):
         sent_hellos = [control["connectionHello"] for control in sent_controls if "connectionHello" in control]
         self.assertEqual([{"phase": "ready", "waiting": 60000}], sent_hellos)
 
-    def test_application_rejection_is_not_reported_as_retryable_handshake_failure(self):
+    def test_application_rejection_is_classified_during_handshake(self):
         class ApplicationRejected(Exception):
             code = 4452
             reason = "Node rejected by application."
 
         websocket = FakeHandshakeWebSocket([b"\x00\x00", ApplicationRejected()])
-        with self.assertRaises(vr.PeerRejectedError):
+        with self.assertRaises(vr.PeerRejectedError) as raised:
             asyncio.run(vr.perform_ship_handshake(websocket, "local-ship-id"))
+        self.assertTrue(vr._is_application_rejection(raised.exception))
+        self.assertTrue(vr._is_application_rejection(ApplicationRejected()))
+        self.assertFalse(vr._is_application_rejection(RuntimeError("network failure")))
 
     def test_unexpected_cmi_is_rejected(self):
         websocket = FakeHandshakeWebSocket([b"\x00\x01"])

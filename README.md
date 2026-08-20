@@ -49,7 +49,7 @@ The script can:
 ## Deutsch
 
 ### Voraussetzungen
-- Python 3.10+ empfohlen
+- Python 3.9+ (wird in CI getestet)
 - Netzwerkzugriff auf den VR921 im selben Netzwerk (mDNS muss funktionieren)
 
 ### Installation
@@ -90,6 +90,12 @@ HA_MQTT_PASSWORD=
 SHIP_JSONL=true
 SHIP_DISCOVERY_LOG=false
 
+# In myVAILLANT sichtbare SHIP-Identität (optional)
+SHIP_MDNS_SERVICE_NAME=VR921-EEBUS-Client
+SHIP_DEVICE_BRAND=OpenSource
+SHIP_DEVICE_MODEL=VR921-EEBUS-Client
+SHIP_DEVICE_TYPE=Energy-Management-System
+
 # Optional: bekannten VR921 vor dem ersten Verbindungsaufbau festlegen
 VR921_REMOTE_SKI=
 ```
@@ -129,7 +135,7 @@ journalctl -u vaillant-vr921.service -f
 ## English
 
 ### Prerequisites
-- Python 3.10+ recommended
+- Python 3.9+ (covered by CI)
 - Network access to the VR921 on the same LAN (mDNS must work)
 
 ### Installation
@@ -169,6 +175,12 @@ HA_MQTT_PASSWORD=
 # Logging (optional)
 SHIP_JSONL=true
 SHIP_DISCOVERY_LOG=false
+
+# SHIP identity visible in myVAILLANT (optional)
+SHIP_MDNS_SERVICE_NAME=VR921-EEBUS-Client
+SHIP_DEVICE_BRAND=OpenSource
+SHIP_DEVICE_MODEL=VR921-EEBUS-Client
+SHIP_DEVICE_TYPE=Energy-Management-System
 
 # Optional: pin the known VR921 before the first connection
 VR921_REMOTE_SKI=
@@ -234,6 +246,8 @@ Zusätzlich:
 - `SHIP_HANDSHAKE_LOG=false` blendet standardmäßig rohe Handshake-Payloads aus; `true` ist nur für gezielte Diagnose gedacht.
 
 ### SHIP/SPINE Sicherheit und READ-Profil
+- `SHIP_MDNS_SERVICE_NAME`, `SHIP_DEVICE_BRAND`, `SHIP_DEVICE_MODEL` und `SHIP_DEVICE_TYPE`: bestimmen die in myVAILLANT sichtbare lokale SHIP-Identität. Leerraum und Semikolons sind in SHIP-TXT-Werten nicht zulässig.
+- `SHIP_DEVICE_SERIAL`, `SHIP_DEVICE_CATEGORIES` (Default `2`, Energiemanagement) und `SHIP_ID`: optionale weitere SHIP-Identitätswerte. Ohne Konfiguration bleiben ID und Serienkennung an das persistente Client-Zertifikat gebunden.
 - `VR921_REMOTE_SKI`: optional erwartete Remote-SKI. Nach dem ersten erfolgreich in der App bestätigten Handshake wird die Identität zusätzlich in `vr921_peer.json` gepinnt.
 - `VR921_PEER_FILE`: alternativer Pfad für den persistenten Peer-Pin.
 - `SHIP_READ_ALL_ADVERTISED=false`: standardmäßig werden nur bekannte, explizit als READ angekündigte Funktionen gelesen. `true` erlaubt alle angekündigten READ-Funktionen und ist nur für Diagnosezwecke gedacht.
@@ -272,6 +286,8 @@ Also:
 - `SHIP_HANDSHAKE_LOG=false` hides raw handshake payloads by default; enable it only for focused diagnostics.
 
 ### SHIP/SPINE security and READ profile
+- `SHIP_MDNS_SERVICE_NAME`, `SHIP_DEVICE_BRAND`, `SHIP_DEVICE_MODEL` and `SHIP_DEVICE_TYPE`: configure the local SHIP identity visible in myVAILLANT. SHIP TXT values must not contain whitespace or semicolons.
+- `SHIP_DEVICE_SERIAL`, `SHIP_DEVICE_CATEGORIES` (default `2`, energy management) and `SHIP_ID`: optional additional identity values. Without configuration, the ID and serial stay tied to the persistent client certificate.
 - `VR921_REMOTE_SKI`: optional expected remote SKI. After the first app-confirmed handshake the identity is also pinned in `vr921_peer.json`.
 - `VR921_PEER_FILE`: alternate path for the persistent peer pin.
 - `SHIP_READ_ALL_ADVERTISED=false`: by default only known functions explicitly advertised for READ are queried. `true` enables all advertised READ functions for diagnostics.
@@ -322,13 +338,13 @@ If the genuine VR921 certificate changes after a firmware or device replacement,
 ```bash
 python3 connect_vr921.py
 ```
-Während `HELLO phase=pending` musst du in der myVAILLANT App den Zugriff/Trust bestätigen.
+Während `HELLO phase=pending` musst du in der myVAILLANT App den Zugriff/Trust bestätigen. Der Client bleibt in dieser Phase still und wartet auf `READY`; Protokollauswahl und SPINE starten erst danach. Zertifikat und privaten Schlüssel unbedingt behalten, damit die zur Freigabe angezeigte Identität stabil bleibt.
 
 ## English
 ```bash
 python3 connect_vr921.py
 ```
-While `HELLO phase=pending`, confirm Trust/Pairing in the myVAILLANT app.
+While `HELLO phase=pending`, confirm Trust/Pairing in the myVAILLANT app. The client remains silent in this phase and waits for `READY`; protocol negotiation and SPINE start only afterwards. Keep the certificate and private key so the identity shown for approval remains stable.
 
 
 # Struktur

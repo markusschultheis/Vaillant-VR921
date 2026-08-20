@@ -37,7 +37,10 @@ class FakeHandshakeWebSocket(FakeWebSocket):
         self.received = list(received)
 
     async def recv(self):
-        return self.received.pop(0)
+        item = self.received.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        return item
 
 
 class FakeMqttPublisher:
@@ -49,6 +52,9 @@ class FakeMqttPublisher:
 
 
 class CodecTests(unittest.TestCase):
+    def test_annotations_are_deferred_for_python_39_compatibility(self):
+        self.assertIsInstance(vr._spine_addr.__annotations__["entity"], str)
+
     def round_trip(self, payload):
         encoded = vr.json_into_eebus_json(payload)
         return json.loads(vr.json_from_eebus_json(encoded))
@@ -104,6 +110,18 @@ class CodecTests(unittest.TestCase):
 
 
 class DiscoveryTests(unittest.TestCase):
+    def test_local_ship_service_contains_visible_and_mandatory_identity(self):
+        ski = "01" * 20
+        name, properties = vr._local_ship_service(ski, "python-0123456789ab")
+
+        self.assertEqual("VR921-EEBUS-Client-010101", name)
+        self.assertEqual(
+            {"txtvers", "id", "path", "ski", "register", "brand", "type", "model", "serial", "cat"},
+            set(properties),
+        )
+        self.assertEqual("VR921-EEBUS-Client", properties["model"])
+        self.assertEqual("2", properties["cat"])
+
     def test_preserves_duplicate_feature_types_and_filters_read_operations(self):
         discovery = {
             "featureInformation": [
@@ -270,6 +288,14 @@ class HandshakeTests(unittest.TestCase):
         websocket = FakeHandshakeWebSocket(
             [
                 b"\x00\x00",
+                self.control(
+                    {
+                        "connectionHello": {
+                            "phase": "pending",
+                            "waiting": 60000,
+                        }
+                    }
+                ),
                 self.control({"connectionHello": {"phase": "ready"}}),
                 self.control(
                     {
@@ -288,6 +314,21 @@ class HandshakeTests(unittest.TestCase):
 
         self.assertTrue(asyncio.run(vr.perform_ship_handshake(websocket, "local-ship-id")))
         self.assertGreaterEqual(len(websocket.sent), 5)
+        sent_controls = [
+            json.loads(vr.json_from_eebus_json(frame[1:].decode("utf-8")))
+            for frame in websocket.sent
+        ]
+        sent_hellos = [control["connectionHello"] for control in sent_controls if "connectionHello" in control]
+        self.assertEqual([{"phase": "ready", "waiting": 60000}], sent_hellos)
+
+    def test_application_rejection_is_not_reported_as_retryable_handshake_failure(self):
+        class ApplicationRejected(Exception):
+            code = 4452
+            reason = "Node rejected by application."
+
+        websocket = FakeHandshakeWebSocket([b"\x00\x00", ApplicationRejected()])
+        with self.assertRaises(vr.PeerRejectedError):
+            asyncio.run(vr.perform_ship_handshake(websocket, "local-ship-id"))
 
     def test_unexpected_cmi_is_rejected(self):
         websocket = FakeHandshakeWebSocket([b"\x00\x01"])

@@ -24,6 +24,8 @@ Interoperability notes:
 - Vaillant devices can be timing/format strict; a lot of logic here is defensive.
 """
 
+from __future__ import annotations
+
 import asyncio
 import datetime
 import inspect
@@ -65,6 +67,10 @@ def _emit_jsonl(payload: Dict[str, Any]) -> None:
 
 class PeerIdentityError(RuntimeError):
     """Raised when the discovered and TLS peer identities do not match."""
+
+
+class PeerRejectedError(RuntimeError):
+    """Raised when the remote application explicitly rejects SHIP pairing."""
 
 
 LOCAL_CLIENT_FEATURES: Dict[str, Tuple[Tuple[int, ...], int]] = {
@@ -240,6 +246,47 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if s in {"0", "false", "no", "n", "off"}:
         return False
     return default
+
+
+def _ship_txt_value(name: str, default: str, *, max_bytes: int, required: bool = True) -> str:
+    """Read and validate one SHIP TXT value."""
+    value = _env_str(name, default).strip()
+    if required and not value:
+        raise ValueError(f"{name} darf nicht leer sein")
+    if ";" in value or any(character.isspace() for character in value):
+        raise ValueError(f"{name} darf weder Semikolon noch Leerraum enthalten")
+    if len(value.encode("utf-8")) > max_bytes:
+        raise ValueError(f"{name} ist länger als {max_bytes} UTF-8-Bytes")
+    return value
+
+
+def _local_ship_service(local_ski: str, local_ship_id: str) -> Tuple[str, Dict[str, str]]:
+    """Build a complete, human-readable SHIP mDNS identity."""
+    service_name = _ship_txt_value(
+        "SHIP_MDNS_SERVICE_NAME",
+        f"VR921-EEBUS-Client-{local_ski[:6]}",
+        max_bytes=63,
+    )
+    categories_raw = _ship_txt_value("SHIP_DEVICE_CATEGORIES", "2", max_bytes=32)
+    categories = categories_raw.split(",")
+    if len(categories) != len(set(categories)) or any(
+        not category.isdigit() or int(category) not in range(1, 8)
+        for category in categories
+    ):
+        raise ValueError("SHIP_DEVICE_CATEGORIES muss eindeutige Werte von 1 bis 7 enthalten")
+
+    return service_name, {
+        "txtvers": "1",
+        "id": _ship_txt_value("SHIP_ID", local_ship_id, max_bytes=63),
+        "path": "/ship/",
+        "ski": _normalize_ski(local_ski),
+        "register": str(_env_bool("SHIP_MDNS_REGISTER", True)).lower(),
+        "brand": _ship_txt_value("SHIP_DEVICE_BRAND", "OpenSource", max_bytes=32),
+        "type": _ship_txt_value("SHIP_DEVICE_TYPE", "Energy-Management-System", max_bytes=32),
+        "model": _ship_txt_value("SHIP_DEVICE_MODEL", "VR921-EEBUS-Client", max_bytes=32),
+        "serial": _ship_txt_value("SHIP_DEVICE_SERIAL", local_ship_id, max_bytes=32),
+        "cat": ",".join(categories),
+    }
 
 
 def _slug(s: str) -> str:
@@ -2167,7 +2214,6 @@ async def perform_ship_handshake(ws, local_ship_id: str):
     # We deliberately do not "jump ahead" while the peer is still pending (waiting
     # for the user to press Trust in the myVAILLANT app).
     state = "WAITING_HELLO"
-    last_pending_hello_sent = 0.0
     
     while True:
         try:
@@ -2175,7 +2221,11 @@ async def perform_ship_handshake(ws, local_ship_id: str):
             if remaining <= 0:
                 _human_print(f"❌ SHIP-Handshake nach {handshake_timeout}s abgebrochen")
                 return False
-            raw_msg = await asyncio.wait_for(ws.recv(), timeout=min(65.0, remaining))
+            # Pairing approval is asynchronous user input. While waiting for
+            # HELLO/READY, keep the same connection open for the complete
+            # configured handshake window instead of imposing a 65 s sub-timeout.
+            phase_timeout = remaining if state == "WAITING_HELLO" else min(65.0, remaining)
+            raw_msg = await asyncio.wait_for(ws.recv(), timeout=phase_timeout)
         except asyncio.TimeoutError:
             _human_print(f"❌ SHIP-Handshake-Phase {state} ohne Antwort")
             return False
@@ -2183,6 +2233,10 @@ async def perform_ship_handshake(ws, local_ship_id: str):
             # websockets raises ConnectionClosedError/OK subclasses
             code = getattr(e, "code", None)
             reason = getattr(e, "reason", None)
+            if code == 4452:
+                raise PeerRejectedError(
+                    f"VR921/myVAILLANT hat die SHIP-Freigabe abgelehnt: {reason or e}"
+                ) from e
             _human_print(f"❌ WebSocket geschlossen während Handshake: code={code} reason={reason} err={e}")
             return False
         if not isinstance(raw_msg, bytes) or len(raw_msg) < 2:
@@ -2224,19 +2278,14 @@ async def perform_ship_handshake(ws, local_ship_id: str):
                 _human_print("⏳ [HELLO] STATUS: PENDING - Warte auf Bestätigung in der myVAILLANT App...")
                 _human_print("👉 JETZT in der App den Zugriff bestätigen!")
 
-                # Important: while the remote side is still pending (waiting for user trust/pairing),
-                # we MUST NOT proceed to protocol/pin/access. To keep the hello phase alive and
-                # avoid timeouts, we answer with our own PENDING + waiting.
+                # The remote side owns this pending state while the user decides in
+                # myVAILLANT. Do not echo PENDING and do not advance the handshake;
+                # wait silently for its subsequent READY (or rejection).
                 if isinstance(waiting_ms, int):
                     _human_print(f"⏳ [HELLO] Remote waiting={waiting_ms}ms prolongationRequest={prolong}")
                 else:
                     _human_print(f"⏳ [HELLO] Remote prolongationRequest={prolong}")
-
-                now = time.monotonic()
-                if now - last_pending_hello_sent > 5.0:
-                    await send_ship_json(ws, {"connectionHello": {"phase": "pending", "waiting": 60000}})
-                    last_pending_hello_sent = now
-                # Bleibe in WAITING_HELLO State
+                # Bleibe in WAITING_HELLO und warte auf die Freigabe.
                 
             elif phase == "ready":
                 _human_print("✅ [HELLO] Phase abgeschlossen - beide Seiten READY")
@@ -2256,8 +2305,9 @@ async def perform_ship_handshake(ws, local_ship_id: str):
                 state = "WAITING_PROTOCOL"
                 
             elif phase == "aborted":
-                _human_print("❌ [HELLO] Verbindung von Wärmepumpe abgelehnt (Aborted).")
-                return False
+                raise PeerRejectedError(
+                    "VR921/myVAILLANT hat die SHIP-Freigabe abgelehnt (HELLO aborted)"
+                )
 
         # === PHASE 3: PROTOCOL RESPONSE ===
         elif "messageProtocolHandshake" in msg and state == "WAITING_PROTOCOL":
@@ -2567,21 +2617,20 @@ async def main() -> None:
         aiozc = AsyncZeroconf(ip_version=IPVersion.V4Only)
         handler = MDNSHandler(local_ski, expected_remote_ski=pinned_peer.get("ski", ""))
         local_port = _env_int("SHIP_LOCAL_ADVERTISEMENT_PORT", 54885)
+        mdns_service_name, mdns_properties = _local_ship_service(local_ski, local_ship_id)
         service_info = AsyncServiceInfo(
             "_ship._tcp.local.",
-            f"Python-{local_ski[:6]}._ship._tcp.local.",
+            f"{mdns_service_name}._ship._tcp.local.",
             addresses=[socket.inet_aton(local_ip)],
             port=local_port,
-            properties={
-                "txtvers": "1",
-                "path": "/ship/",
-                "ski": local_ski,
-                "register": "true",
-            },
+            properties=mdns_properties,
         )
         await aiozc.async_register_service(service_info)
         browser = AsyncServiceBrowser(aiozc.zeroconf, "_ship._tcp.local.", handler)
-        _human_print(f"📢 mDNS aktiv: {local_ip}; lokale SKI={local_ski}")
+        _human_print(
+            f"📢 mDNS aktiv: {local_ip}; Name={mdns_service_name}; "
+            f"Gerät={mdns_properties['brand']}/{mdns_properties['model']}; lokale SKI={local_ski}"
+        )
 
         await asyncio.to_thread(mqtt_pub.connect)
 
@@ -2615,9 +2664,21 @@ async def main() -> None:
                 )
             except PeerIdentityError:
                 raise
+            except PeerRejectedError as exc:
+                _human_print(
+                    f"⛔ {exc}. Kein automatischer Neuversuch; "
+                    "Pairing in myVAILLANT erneut öffnen und den Client neu starten."
+                )
+                return
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                if getattr(exc, "code", None) == 4452:
+                    _human_print(
+                        "⛔ VR921/myVAILLANT hat die SHIP-Freigabe abgelehnt. "
+                        "Kein automatischer Neuversuch; Pairing erneut öffnen und den Client neu starten."
+                    )
+                    return
                 duration = time.monotonic() - attempt_started
                 if duration >= 60:
                     backoff = minimum_backoff

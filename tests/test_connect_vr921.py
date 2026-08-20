@@ -122,6 +122,34 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual("VR921-EEBUS-Client", properties["model"])
         self.assertEqual("2", properties["cat"])
 
+    def test_mdns_discovery_ignores_other_ship_services_on_local_host(self):
+        class FakeServiceInfo:
+            def __init__(self, address, ski):
+                self.address = address
+                self.properties = {b"ski": ski.encode("utf-8")}
+
+            def parsed_addresses(self, version):
+                return [self.address]
+
+        class FakeZeroconf:
+            def __init__(self, info):
+                self.info = info
+
+            async def async_get_service_info(self, type_, name):
+                return self.info
+
+        local_ski = "01" * 20
+        remote_ski = "02" * 20
+        handler = vr.MDNSHandler(local_ski, local_addresses=("10.2.0.94",))
+
+        local_info = FakeServiceInfo("10.2.0.94", remote_ski)
+        asyncio.run(handler.async_add_service(FakeZeroconf(local_info), "_ship._tcp.local.", "local"))
+        self.assertIsNone(handler.target_info)
+
+        remote_info = FakeServiceInfo("10.2.0.132", remote_ski)
+        asyncio.run(handler.async_add_service(FakeZeroconf(remote_info), "_ship._tcp.local.", "vr921"))
+        self.assertIs(remote_info, handler.target_info)
+
     def test_preserves_duplicate_feature_types_and_filters_read_operations(self):
         discovery = {
             "featureInformation": [
@@ -319,23 +347,37 @@ class HandshakeTests(unittest.TestCase):
             for frame in websocket.sent
         ]
         sent_hellos = [control["connectionHello"] for control in sent_controls if "connectionHello" in control]
-        self.assertEqual([{"phase": "ready", "waiting": 60000}], sent_hellos)
+        self.assertEqual(
+            [
+                {"phase": "ready", "waiting": 60000},
+                {"phase": "pending", "waiting": 60000},
+            ],
+            sent_hellos,
+        )
 
-    def test_application_rejection_is_classified_during_handshake(self):
+    def test_application_rejection_returns_handshake_failure(self):
         class ApplicationRejected(Exception):
             code = 4452
             reason = "Node rejected by application."
 
         websocket = FakeHandshakeWebSocket([b"\x00\x00", ApplicationRejected()])
-        with self.assertRaises(vr.PeerRejectedError) as raised:
-            asyncio.run(vr.perform_ship_handshake(websocket, "local-ship-id"))
-        self.assertTrue(vr._is_application_rejection(raised.exception))
-        self.assertTrue(vr._is_application_rejection(ApplicationRejected()))
-        self.assertFalse(vr._is_application_rejection(RuntimeError("network failure")))
-
-    def test_unexpected_cmi_is_rejected(self):
-        websocket = FakeHandshakeWebSocket([b"\x00\x01"])
         self.assertFalse(asyncio.run(vr.perform_ship_handshake(websocket, "local-ship-id")))
+
+    def test_main_compatible_cmi_continues_to_hello(self):
+        websocket = FakeHandshakeWebSocket(
+            [
+                b"\x00\x01",
+                self.control({"connectionHello": {"phase": "aborted"}}),
+            ]
+        )
+        self.assertFalse(asyncio.run(vr.perform_ship_handshake(websocket, "local-ship-id")))
+        sent_control = json.loads(
+            vr.json_from_eebus_json(websocket.sent[0][1:].decode("utf-8"))
+        )
+        self.assertEqual(
+            {"phase": "ready", "waiting": 60000},
+            sent_control["connectionHello"],
+        )
 
 
 class DataParserTests(unittest.TestCase):

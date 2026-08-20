@@ -69,10 +69,6 @@ class PeerIdentityError(RuntimeError):
     """Raised when the discovered and TLS peer identities do not match."""
 
 
-class PeerRejectedError(RuntimeError):
-    """Raised when the remote application has not accepted SHIP pairing."""
-
-
 LOCAL_CLIENT_FEATURES: Dict[str, Tuple[Tuple[int, ...], int]] = {
     # Preserve the field-used Measurement address and add client endpoints for
     # additional read-only server feature families.
@@ -246,11 +242,6 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if s in {"0", "false", "no", "n", "off"}:
         return False
     return default
-
-
-def _is_application_rejection(exc: BaseException) -> bool:
-    """Return whether a session failed because the remote application closed it."""
-    return isinstance(exc, PeerRejectedError) or getattr(exc, "code", None) == 4452
 
 
 def _ship_txt_value(name: str, default: str, *, max_bytes: int, required: bool = True) -> str:
@@ -899,9 +890,16 @@ class MDNSHandler(ServiceListener):
     candidate in `target_info`.
     """
 
-    def __init__(self, ski: str, *, expected_remote_ski: str = ""):
+    def __init__(
+        self,
+        ski: str,
+        *,
+        expected_remote_ski: str = "",
+        local_addresses: Iterable[str] = (),
+    ):
         self.ski = _normalize_ski(ski)
         self.expected_remote_ski = _normalize_ski(expected_remote_ski)
+        self.local_addresses = frozenset(local_addresses)
         self.target_info: Optional[AsyncServiceInfo] = None
         self.target_name: Optional[str] = None
         self._tasks: set[asyncio.Task[Any]] = set()
@@ -923,6 +921,8 @@ class MDNSHandler(ServiceListener):
             except (UnicodeDecodeError, ValueError):
                 remote_ski = ""
             if remote_ski and remote_ski == self.ski:
+                return
+            if self.local_addresses.intersection(info.parsed_addresses(IPVersion.V4Only)):
                 return
             if self.expected_remote_ski and remote_ski != self.expected_remote_ski:
                 return
@@ -2199,17 +2199,11 @@ async def perform_ship_handshake(ws, local_ship_id: str):
     """
     
     # === PHASE 1: CMI (Connection Mode Init) ===
-    handshake_timeout = max(30, _env_int("SHIP_HANDSHAKE_TIMEOUT", 300))
-    deadline = time.monotonic() + handshake_timeout
-    init_ack = await asyncio.wait_for(ws.recv(), timeout=min(30, handshake_timeout))
+    init_ack = await ws.recv()
     if isinstance(init_ack, bytes):
         _human_print(f"📥 [CMI] Initial-Bytes empfangen: {init_ack.hex()}")
-        if init_ack != b"\x00\x00":
-            _human_print(f"❌ [CMI] Unerwartete Initial-Antwort: {init_ack.hex()}")
-            return False
     else:
         _human_print(f"📥 [CMI] Initial empfangen (nicht-bytes): {init_ack}")
-        return False
     
     # === PHASE 2: HELLO ===
     _human_print("📤 [HELLO] Sende connectionHello (phase: ready)...")
@@ -2219,29 +2213,15 @@ async def perform_ship_handshake(ws, local_ship_id: str):
     # We deliberately do not "jump ahead" while the peer is still pending (waiting
     # for the user to press Trust in the myVAILLANT app).
     state = "WAITING_HELLO"
+    last_pending_hello_sent = 0.0
     
     while True:
         try:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                _human_print(f"❌ SHIP-Handshake nach {handshake_timeout}s abgebrochen")
-                return False
-            # Pairing approval is asynchronous user input. While waiting for
-            # HELLO/READY, keep the same connection open for the complete
-            # configured handshake window instead of imposing a 65 s sub-timeout.
-            phase_timeout = remaining if state == "WAITING_HELLO" else min(65.0, remaining)
-            raw_msg = await asyncio.wait_for(ws.recv(), timeout=phase_timeout)
-        except asyncio.TimeoutError:
-            _human_print(f"❌ SHIP-Handshake-Phase {state} ohne Antwort")
-            return False
+            raw_msg = await ws.recv()
         except Exception as e:
             # websockets raises ConnectionClosedError/OK subclasses
             code = getattr(e, "code", None)
             reason = getattr(e, "reason", None)
-            if code == 4452:
-                raise PeerRejectedError(
-                    f"VR921/myVAILLANT hat die SHIP-Freigabe abgelehnt: {reason or e}"
-                ) from e
             _human_print(f"❌ WebSocket geschlossen während Handshake: code={code} reason={reason} err={e}")
             return False
         if not isinstance(raw_msg, bytes) or len(raw_msg) < 2:
@@ -2283,14 +2263,19 @@ async def perform_ship_handshake(ws, local_ship_id: str):
                 _human_print("⏳ [HELLO] STATUS: PENDING - Warte auf Bestätigung in der myVAILLANT App...")
                 _human_print("👉 JETZT in der App den Zugriff bestätigen!")
 
-                # The remote side owns this pending state while the user decides in
-                # myVAILLANT. Do not echo PENDING and do not advance the handshake;
-                # wait silently for its subsequent READY (or rejection).
+                # Important: while the remote side is still pending (waiting for user trust/pairing),
+                # we MUST NOT proceed to protocol/pin/access. To keep the hello phase alive and
+                # avoid timeouts, we answer with our own PENDING + waiting.
                 if isinstance(waiting_ms, int):
                     _human_print(f"⏳ [HELLO] Remote waiting={waiting_ms}ms prolongationRequest={prolong}")
                 else:
                     _human_print(f"⏳ [HELLO] Remote prolongationRequest={prolong}")
-                # Bleibe in WAITING_HELLO und warte auf die Freigabe.
+
+                now = time.monotonic()
+                if now - last_pending_hello_sent > 5.0:
+                    await send_ship_json(ws, {"connectionHello": {"phase": "pending", "waiting": 60000}})
+                    last_pending_hello_sent = now
+                # Bleibe in WAITING_HELLO State
                 
             elif phase == "ready":
                 _human_print("✅ [HELLO] Phase abgeschlossen - beide Seiten READY")
@@ -2310,9 +2295,8 @@ async def perform_ship_handshake(ws, local_ship_id: str):
                 state = "WAITING_PROTOCOL"
                 
             elif phase == "aborted":
-                raise PeerRejectedError(
-                    "VR921/myVAILLANT hat die SHIP-Freigabe abgelehnt (HELLO aborted)"
-                )
+                _human_print("❌ [HELLO] Verbindung von Wärmepumpe abgelehnt (Aborted).")
+                return False
 
         # === PHASE 3: PROTOCOL RESPONSE ===
         elif "messageProtocolHandshake" in msg and state == "WAITING_PROTOCOL":
@@ -2328,13 +2312,6 @@ async def perform_ship_handshake(ws, local_ship_id: str):
             version = handshake.get("version", {})
             if version.get("major") != 1:
                 _human_print(f"❌ [PROTOCOL] Nicht unterstützte Version: {version}")
-                return False
-            formats = handshake.get("formats", {})
-            format_values = formats.get("format") if isinstance(formats, dict) else None
-            if isinstance(format_values, str):
-                format_values = [format_values]
-            if not isinstance(format_values, list) or "JSON-UTF8" not in format_values:
-                _human_print(f"❌ [PROTOCOL] JSON-UTF8 wurde nicht ausgewählt: {formats}")
                 return False
             
             _human_print("✅ [PROTOCOL] Protokoll-Handshake bestätigt (Version 1.0)")
@@ -2620,7 +2597,11 @@ async def main() -> None:
     try:
         local_ip = _local_ipv4_address()
         aiozc = AsyncZeroconf(ip_version=IPVersion.V4Only)
-        handler = MDNSHandler(local_ski, expected_remote_ski=pinned_peer.get("ski", ""))
+        handler = MDNSHandler(
+            local_ski,
+            expected_remote_ski=pinned_peer.get("ski", ""),
+            local_addresses=(local_ip,),
+        )
         local_port = _env_int("SHIP_LOCAL_ADVERTISEMENT_PORT", 54885)
         mdns_service_name, mdns_properties = _local_ship_service(local_ski, local_ship_id)
         service_info = AsyncServiceInfo(
@@ -2641,17 +2622,8 @@ async def main() -> None:
 
         minimum_backoff = max(1, _env_int("SHIP_RECONNECT_INITIAL_SECONDS", 2))
         maximum_backoff = max(minimum_backoff, _env_int("SHIP_RECONNECT_MAX_SECONDS", 60))
-        pairing_announcement_seconds = max(0, _env_int("SHIP_PAIRING_ANNOUNCEMENT_SECONDS", 30))
-        pairing_retry_seconds = max(5, _env_int("SHIP_PAIRING_RETRY_SECONDS", 15))
         backoff = minimum_backoff
         discovery_timeout = max(5, _env_int("SHIP_DISCOVERY_TIMEOUT", 30))
-
-        if not pinned_peer.get("certificate_sha256") and pairing_announcement_seconds:
-            _human_print(
-                f"⏳ Pairing: mDNS-Identität bleibt sichtbar; erster Verbindungsversuch "
-                f"in {pairing_announcement_seconds}s. Jetzt myVAILLANT öffnen."
-            )
-            await asyncio.sleep(pairing_announcement_seconds)
 
         while True:
             target = await _wait_for_target(handler, timeout=discovery_timeout)
@@ -2681,14 +2653,9 @@ async def main() -> None:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                if _is_application_rejection(exc):
-                    _human_print(
-                        "⏳ VR921/myVAILLANT hat die SHIP-Verbindung noch nicht freigegeben. "
-                        f"mDNS bleibt aktiv; neuer Pairing-Versuch in {pairing_retry_seconds}s. "
-                        "In der App den angezeigten Client bestätigen."
-                    )
-                    await asyncio.sleep(pairing_retry_seconds)
-                    continue
+                if not pinned_peer.get("certificate_sha256"):
+                    _human_print(f"❌ Pairing/SHIP fehlgeschlagen: {exc}")
+                    return
                 duration = time.monotonic() - attempt_started
                 if duration >= 60:
                     backoff = minimum_backoff

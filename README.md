@@ -253,9 +253,7 @@ Zusätzlich:
 - `SHIP_READ_ALL_ADVERTISED=false`: standardmäßig werden nur bekannte, explizit als READ angekündigte Funktionen gelesen. `true` erlaubt alle angekündigten READ-Funktionen und ist nur für Diagnosezwecke gedacht.
 - `SHIP_SUBSCRIBE_UPDATES=true`: abonniert unterstützte Server-Features und führt anschließend den Initial-Read aus.
 - `SHIP_READ_DELAY_MS` (Default `30`): kleine Pause zwischen Discovery-basierten READs zum Schutz des Gateways.
-- `SHIP_REQUEST_TIMEOUT`, `SHIP_HANDSHAKE_TIMEOUT`, `SHIP_RECONNECT_INITIAL_SECONDS`, `SHIP_RECONNECT_MAX_SECONDS`: Timeout- und Reconnect-Grenzen.
-- `SHIP_PAIRING_ANNOUNCEMENT_SECONDS` (Default `30`): Zeit, in der die neue Client-Identität vor dem ersten Verbindungsversuch nur per mDNS sichtbar bleibt.
-- `SHIP_PAIRING_RETRY_SECONDS` (Default `15`, Minimum `5`): langsames Wiederholungsintervall, solange VR921/myVAILLANT die noch nicht freigegebene Verbindung mit Code `4452` beendet. Die mDNS-Ankündigung bleibt dabei aktiv.
+- `SHIP_REQUEST_TIMEOUT`, `SHIP_RECONNECT_INITIAL_SECONDS`, `SHIP_RECONNECT_MAX_SECONDS`: Request-Timeout und Reconnect-Grenzen. Beim ersten, noch nicht bestätigten Pairing beendet ein Fehler den einzelnen Verbindungsversuch wie im `main`-Branch; automatischer Reconnect beginnt erst mit gespeicherter Peer-Identität.
 - `SHIP_REQUIRE_SUBPROTOCOL=true`: verlangt die WebSocket-Subprotokollbestätigung `ship`.
 - `SHIP_OPEN_TIMEOUT`, `SHIP_MAX_FRAME_BYTES`, `SHIP_PING_INTERVAL` und `SHIP_PING_TIMEOUT`: begrenzen Verbindungsaufbau/Frame-Größe und konfigurieren die WebSocket-Lebenszeichen.
 - `SHIP_OPENSSL_SECURITY_LEVEL_1=false`: nur für ältere VR921-Firmware aktivieren, falls deren Cipher mit dem OpenSSL-Standardprofil nicht funktioniert.
@@ -295,9 +293,7 @@ Also:
 - `SHIP_READ_ALL_ADVERTISED=false`: by default only known functions explicitly advertised for READ are queried. `true` enables all advertised READ functions for diagnostics.
 - `SHIP_SUBSCRIBE_UPDATES=true`: subscribes to supported server features, followed by an initial read.
 - `SHIP_READ_DELAY_MS` (default `30`): small delay between discovery-driven reads to protect the gateway.
-- `SHIP_REQUEST_TIMEOUT`, `SHIP_HANDSHAKE_TIMEOUT`, `SHIP_RECONNECT_INITIAL_SECONDS`, `SHIP_RECONNECT_MAX_SECONDS`: timeout and reconnect limits.
-- `SHIP_PAIRING_ANNOUNCEMENT_SECONDS` (default `30`): time during which a new client identity remains visible through mDNS before its first connection attempt.
-- `SHIP_PAIRING_RETRY_SECONDS` (default `15`, minimum `5`): slow retry interval while VR921/myVAILLANT closes a not-yet-approved connection with code `4452`. The mDNS announcement remains active.
+- `SHIP_REQUEST_TIMEOUT`, `SHIP_RECONNECT_INITIAL_SECONDS`, `SHIP_RECONNECT_MAX_SECONDS`: request timeout and reconnect limits. During the first, not-yet-confirmed pairing, a failure ends the single connection attempt as on `main`; automatic reconnect starts only with a stored peer identity.
 - `SHIP_REQUIRE_SUBPROTOCOL=true`: requires the `ship` WebSocket subprotocol confirmation.
 - `SHIP_OPEN_TIMEOUT`, `SHIP_MAX_FRAME_BYTES`, `SHIP_PING_INTERVAL` and `SHIP_PING_TIMEOUT`: limit connection setup/frame size and configure WebSocket liveness checks.
 - `SHIP_OPENSSL_SECURITY_LEVEL_1=false`: enable only for older VR921 firmware whose ciphers fail with OpenSSL's default security profile.
@@ -342,13 +338,13 @@ If the genuine VR921 certificate changes after a firmware or device replacement,
 ```bash
 python3 connect_vr921.py
 ```
-Der Client kündigt seine Identität zunächst per mDNS an. Falls die VR921 vor dem HELLO mit Code `4452` schließt, bleibt die Ankündigung aktiv und der Client versucht die Verbindung langsam erneut; dadurch bleibt Zeit, den sichtbaren Client in myVAILLANT auszuwählen. Während `HELLO phase=pending` musst du dort den Zugriff/Trust bestätigen. Der Client bleibt in dieser Phase still und wartet auf `READY`; Protokollauswahl und SPINE starten erst danach. Zertifikat und privaten Schlüssel unbedingt behalten, damit die zur Freigabe angezeigte Identität stabil bleibt.
+Während `HELLO phase=pending` musst du in der myVAILLANT App den Zugriff/Trust bestätigen.
 
 ## English
 ```bash
 python3 connect_vr921.py
 ```
-The client first announces its identity through mDNS. If the VR921 closes before HELLO with code `4452`, the announcement stays active and the client retries slowly, leaving time to select the visible client in myVAILLANT. While `HELLO phase=pending`, confirm Trust/Pairing there. The client remains silent in this phase and waits for `READY`; protocol negotiation and SPINE start only afterwards. Keep the certificate and private key so the identity shown for approval remains stable.
+While `HELLO phase=pending`, confirm Trust/Pairing in the myVAILLANT app.
 
 
 # Struktur
